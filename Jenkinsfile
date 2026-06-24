@@ -6,12 +6,13 @@ pipeline {
     }
     environment {
         SCANNER_HOME = tool 'sonar-scanner'
+        IMAGE_NAME = "angadvm/ci-cd-pipeline-project"
+        IMAGE_TAG = "latest"
     }
-    
     stages {
         stage('Git Checkout') {
             steps {
-                git branch: 'main', url: 'https://github.com/ougabriel/full-stack-blogging-app.git'
+                git branch: 'main', url: 'https://github.com/AngadVM/full-stack-blogging-app.git'
             }
         }
         stage('Compile') {
@@ -19,7 +20,7 @@ pipeline {
                 sh "mvn compile"
             }
         }
-        stage('Trivy FS') {
+        stage('Trivy FS Scan') {
             steps {
                 sh "trivy fs . --format table -o fs.html"
             }
@@ -27,8 +28,12 @@ pipeline {
         stage('SonarQube Analysis') {
             steps {
                 withSonarQubeEnv('sonarqubeServer') {
-                    sh '''$SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Blogging-app -Dsonar.projectKey=Blogging-app \
-                          -Dsonar.java.binaries=target'''
+                    sh """
+                    $SCANNER_HOME/bin/sonar-scanner \
+                    -Dsonar.projectName=Blogging-app \
+                    -Dsonar.projectKey=Blogging-app \
+                    -Dsonar.java.binaries=target
+                    """
                 }
             }
         }
@@ -39,37 +44,37 @@ pipeline {
         }
         stage('Publish Artifacts') {
             steps {
-                withMaven(globalMavenSettingsConfig: 'maven-settings', jdk: 'jdk', maven: 'maven', mavenSettingsConfig: '', traceability: true) {
-                        sh "mvn deploy"
+                withMaven(globalMavenSettingsConfig: 'maven-settings', jdk: 'jdk', maven: 'maven', mavenOpts: '-DskipTests', traceability: true) {
+                    sh "mvn deploy"
                 }
             }
         }
-        stage('Docker Build & Tag') {
+        stage('Docker Build') {
             steps {
-                script{
-                withDockerRegistry(credentialsId: 'dockerhub-cred', url: 'https://index.docker.io/v1/') {
-                sh "docker build -t ugogabriel/gab-blogging-app ."
-                }
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred') {
+                        sh "docker build -t $IMAGE_NAME:$IMAGE_TAG ."
+                    }
                 }
             }
         }
         stage('Trivy Image Scan') {
             steps {
-                sh "trivy image --format table -o image.html ugogabriel/gab-blogging-app:latest"
+                sh "trivy image --format table -o image.html $IMAGE_NAME:$IMAGE_TAG"
             }
         }
-        stage('Docker Push Image') {
+        stage('Docker Push') {
             steps {
-                script{
-                withDockerRegistry(credentialsId: 'dockerhub-cred', url: 'https://index.docker.io/v1/') {
-                    sh "docker push ugogabriel/gab-blogging-app"
-                }
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred') {
+                        sh "docker push $IMAGE_NAME:$IMAGE_TAG"
+                    }
                 }
             }
         }
         stage('K8s Deploy') {
             steps {
-               withKubeCredentials(kubectlCredentials: [[caCertificate: '', clusterName: ' devopsshack-cluster', contextName: '', credentialsId: 'k8s-token', namespace: 'webapps', serverUrl: 'https://AD1D9143EC6B3C8A72B36759FA28854D.gr7.eu-west-2.eks.amazonaws.com']]) {
+               withKubeCredentials(kubectlCredentials: [[caCertificate: '', clusterName: 'devopsshack-cluster', contextName: '', credentialsId: 'k8s-token', namespace: 'webapps', serverUrl: 'https://2DF6EF6280BA8465041B60E3A3D73CC9.gr7.us-east-1.eks.amazonaws.com']]) {
                     sh "kubectl apply -f deployment-service.yml"
                     sleep 20
                 }
@@ -77,51 +82,46 @@ pipeline {
         }
         stage('Verify Deployment') {
             steps {
-               withKubeCredentials(kubectlCredentials: [[caCertificate: '', clusterName: ' devopsshack-cluster', contextName: '', credentialsId: 'k8s-token', namespace: 'webapps', serverUrl: 'https://AD1D9143EC6B3C8A72B36759FA28854D.gr7.eu-west-2.eks.amazonaws.com']]) {
+               withKubeCredentials(kubectlCredentials: [[caCertificate: '', clusterName: 'devopsshack-cluster', contextName: '', credentialsId: 'k8s-token', namespace: 'webapps', serverUrl: 'https://2DF6EF6280BA8465041B60E3A3D73CC9.gr7.us-east-1.eks.amazonaws.com']]) {
                     sh "kubectl get pods"
                     sh "kubectl get service"
                 }
             }
         }
-        
-    }  // Closing stages
-}  // Closing pipeline
+    }
+}
 post {
     always {
         script {
-            // Get job name, build number, and pipeline status
             def jobName = env.JOB_NAME
             def buildNumber = env.BUILD_NUMBER
-            def pipelineStatus = currentBuild.result ?: 'UNKNOWN'
+            def pipelineStatus = currentBuild.result ?: 'SUCCESS'
             pipelineStatus = pipelineStatus.toUpperCase()
-            
-            // Set the banner color based on the status
+
             def bannerColor = pipelineStatus == 'SUCCESS' ? 'green' : 'red'
 
-            // HTML body for the email
             def body = """
             <body>
-                <div style="border: 2px solid ${bannerColor}; padding: 10px;">
-                    <h3 style="color: ${bannerColor};">
-                        Pipeline Status: ${pipelineStatus}
-                    </h3>
-                    <p>Job: ${jobName}</p>
-                    <p>Build Number: ${buildNumber}</p>
-                    <p>Status: ${pipelineStatus}</p>
+                <div style="border: 2px solid ${bannerColor}; padding: 15px;">
+                    <h2 style="color: ${bannerColor};">
+                         Jenkins Pipeline Status: ${pipelineStatus}
+                    </h2>
+                    <hr/>
+                    <p><b>Job Name:</b> ${jobName}</p>
+                    <p><b>Build Number:</b> ${buildNumber}</p>
+                    <p><b>Status:</b> ${pipelineStatus}</p>
+                    <p><b>Build URL:</b> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
                 </div>
             </body>
             """
 
-            // Send email notification
             emailext(
-                subject: "${jobName} - Build ${buildNumber} - ${pipelineStatus}",
+                subject: "${jobName} - Build #${buildNumber} - ${pipelineStatus}",
                 body: body,
-                to: 'ougabriel@gmail.com',
-                from: 'jenkins@example.com',
-                replyTo: 'jenkins@example.com',
-                mimeType: 'text/html'
+                to: 'angadvenugopal@gmail.com',
+                mimeType: 'text/html',
+                attachmentsPattern: 'fs.html, image.html'
             )
         }
     }
 }
-
